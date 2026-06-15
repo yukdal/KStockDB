@@ -2,10 +2,10 @@ import datetime
 from pykrx import stock
 
 def get_last_trading_day_of_week(target_date: datetime.date = None) -> datetime.date:
-    \"\"\"
+    """
     주어진 날짜가 속한 주의 마지막 거래일을 반환합니다.
     기본값은 오늘(today)입니다.
-    \"\"\"
+    """
     if target_date is None:
         target_date = datetime.date.today()
     
@@ -25,9 +25,9 @@ def get_last_trading_day_of_week(target_date: datetime.date = None) -> datetime.
     return b_days[-1].date()
 
 def is_today_last_trading_day() -> bool:
-    \"\"\"
+    """
     오늘이 이번 주의 마지막 거래일인지 확인합니다.
-    \"\"\"
+    """
     today = datetime.date.today()
     last_trading_day = get_last_trading_day_of_week(today)
     
