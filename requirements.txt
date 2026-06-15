@@ -1,0 +1,7 @@
+pykrx
+pandas
+gspread
+requests
+pykiwoom
+apscheduler
+python-dotenv
