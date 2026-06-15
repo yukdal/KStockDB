@@ -2,6 +2,6 @@ pykrx
 pandas
 gspread
 requests
-pykiwoom
 apscheduler
 python-dotenv
+pykiwoom; sys_platform == 'win32'
