@@ -1,6 +1,6 @@
 import gspread
 import pandas as pd
-from oauth2client.service_account import ServiceAccountCredentials
+
 import os
 from dotenv import load_dotenv
 
@@ -19,19 +19,24 @@ def update_google_sheet(df: pd.DataFrame):
         return
         
     print("구글 시트에 연결합니다...")
-    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    creds = ServiceAccountCredentials.from_json_keyfile_name(json_path, scope)
-    client = gspread.authorize(creds)
+    try:
+        client = gspread.service_account(filename=json_path)
+    except Exception as e:
+        print(f"구글 인증 실패. service_account.json 파일을 확인하세요: {e}")
+        return
+        
+    # 탭 이름은 [한국종목코드]
+    try:
+        sheet = client.open_by_key(spreadsheet_id).worksheet("한국종목코드")
+    except Exception as e:
+        print(f"스프레드시트를 열 수 없습니다. 시트 ID와 서비스 계정 편집자 권한 부여 여부를 확인하세요: {e}")
+        return
     
-    # 탭 이름은 [종목코드모음]
-    sheet = client.open_by_key(spreadsheet_id).worksheet("종목코드모음")
-    
-    # 기존 데이터 로드
-    existing_data = sheet.get_all_records()
-    existing_df = pd.DataFrame(existing_data)
+    # 기존 데이터 로드 (get_all_records는 헤더 중복 시 에러가 나므로 get_all_values 사용)
+    existing_data = sheet.get_all_values()
     
     # 시트가 비어있을 경우 헤더 초기화 및 전체 입력
-    if existing_df.empty:
+    if not existing_data or len(existing_data) == 0:
         print("시트가 비어있습니다. 초기 데이터를 씁니다.")
         headers = ["시장", "종목코드", "종목명", "섹터"]
         sheet.append_row(headers)
@@ -39,6 +44,10 @@ def update_google_sheet(df: pd.DataFrame):
         sheet.append_rows(new_values)
         print(f"초기화 완료: {len(new_values)} 종목 추가")
         return
+        
+    # 데이터가 있는 경우 DataFrame 변환
+    headers_in_sheet = existing_data[0]
+    existing_df = pd.DataFrame(existing_data[1:], columns=headers_in_sheet)
 
     # 종목코드를 문자열로 (앞에 0이 유지되도록)
     existing_df['종목코드'] = existing_df['종목코드'].astype(str).str.zfill(6)
