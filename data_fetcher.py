@@ -3,8 +3,12 @@ import requests
 import zipfile
 import io
 import os
-from pykiwoom.kiwoom import Kiwoom
 from pykrx import stock
+
+try:
+    from pykiwoom.kiwoom import Kiwoom
+except ImportError:
+    Kiwoom = None
 
 def fetch_kis_master() -> pd.DataFrame:
     """
@@ -74,6 +78,10 @@ def fetch_kiwoom_data() -> pd.DataFrame:
     Kiwoom OpenAPI+를 통해 종목 정보를 수집합니다.
     (자동 로그인 설정된 32bit 환경)
     """
+    if Kiwoom is None:
+        print("[OCI/Linux 호환 모드] pykiwoom 모듈이 없으므로 키움 연동을 생략합니다.")
+        return pd.DataFrame(columns=["종목코드", "종목명_Kiwoom", "시장_Kiwoom"])
+
     try:
         kiwoom = Kiwoom()
         kiwoom.CommConnect(block=True)
