@@ -5,10 +5,7 @@ import io
 import os
 from pykrx import stock
 
-try:
-    from pykiwoom.kiwoom import Kiwoom
-except ImportError:
-    Kiwoom = None
+# pykiwoom(OCX)는 사용하지 않으므로 제거합니다.
 
 def fetch_kis_master() -> pd.DataFrame:
     """
@@ -73,36 +70,56 @@ def fetch_krx_fallback() -> pd.DataFrame:
         
     return pd.concat(df_list, ignore_index=True)
 
+def get_kiwoom_access_token(appkey: str, appsecret: str) -> str:
+    """
+    키움증권 REST API 접근 토큰(Access Token)을 발급받습니다.
+    실전 투자의 경우 domain이 다를 수 있으며, 여기서는 기본 예시를 제공합니다.
+    """
+    url = "https://openapi.kiwoom.com:10443/oauth2/tokenP"
+    headers = {"content-type": "application/json"}
+    body = {
+        "grant_type": "client_credentials",
+        "appkey": appkey,
+        "appsecret": appsecret
+    }
+    
+    try:
+        res = requests.post(url, headers=headers, json=body, timeout=10)
+        res.raise_for_status()
+        data = res.json()
+        return data.get("access_token", "")
+    except Exception as e:
+        print(f"키움 REST API 토큰 발급 실패: {e}")
+        return ""
+
 def fetch_kiwoom_data() -> pd.DataFrame:
     """
-    Kiwoom OpenAPI+를 통해 종목 정보를 수집합니다.
-    (자동 로그인 설정된 32bit 환경)
+    Kiwoom REST API를 통해 종목 정보를 수집하려 시도합니다.
+    주의: 기존 OpenAPI(OCX)의 GetCodeListByMarket 함수처럼 전체 시장 종목코드를 
+    한 번에 내려주는 API는 REST 방식에서 제공되지 않습니다.
+    따라서 토큰 발급 구조만 세팅하고, 대량 조회가 불가능하므로 빈 결과를 반환합니다.
+    대신 다른 조회 API(현재가 등) 사용 시 이 구조를 활용할 수 있습니다.
     """
-    if Kiwoom is None:
-        print("[OCI/Linux 호환 모드] pykiwoom 모듈이 없으므로 키움 연동을 생략합니다.")
+    appkey = os.getenv("KIWOOM_APPKEY")
+    appsecret = os.getenv("KIWOOM_SECRET")
+    
+    if not appkey or not appsecret or appkey == "your_kiwoom_appkey_here":
+        print("[키움 REST API] .env 파일에 KIWOOM_APPKEY 및 KIWOOM_SECRET 설정이 누락되어 연동을 생략합니다.")
         return pd.DataFrame(columns=["종목코드", "종목명_Kiwoom", "시장_Kiwoom"])
-
-    try:
-        kiwoom = Kiwoom()
-        kiwoom.CommConnect(block=True)
         
-        kospi_codes = kiwoom.GetCodeListByMarket('0')
-        kosdaq_codes = kiwoom.GetCodeListByMarket('10')
-        
-        data = []
-        for code in kospi_codes:
-            name = kiwoom.GetMasterCodeName(code)
-            data.append({"종목코드": code, "종목명_Kiwoom": name, "시장_Kiwoom": "KOSPI"})
-            
-        for code in kosdaq_codes:
-            name = kiwoom.GetMasterCodeName(code)
-            data.append({"종목코드": code, "종목명_Kiwoom": name, "시장_Kiwoom": "KOSDAQ"})
-            
-        return pd.DataFrame(data)
-    except Exception as e:
-        print(f"Kiwoom OpenAPI 연동 실패 (32bit 환경/로그인 상태 확인): {e}")
-        # 오류가 나더라도 전체 파이프라인이 멈추지 않도록 빈 DataFrame 반환
+    print("[키움 REST API] Access Token 발급 시도 중...")
+    token = get_kiwoom_access_token(appkey, appsecret)
+    
+    if not token:
         return pd.DataFrame(columns=["종목코드", "종목명_Kiwoom", "시장_Kiwoom"])
+        
+    print("[키움 REST API] 연동 성공 (Token 발급 완료).")
+    print("[안내] 키움 REST API는 전체 종목코드를 한 번에 제공하는 GetCodeListByMarket 기능이 없습니다.")
+    print("[안내] 따라서 교차 검증용 마스터 데이터는 KIS 및 KRX 데이터를 우선 사용합니다.")
+    
+    # REST API로는 전체 코드 리스트 조회가 어려우므로, 빈 데이터프레임 반환
+    # (추후 단일 종목 상세 조회 등이 필요할 때 token을 활용해 HTTP 요청을 보냅니다)
+    return pd.DataFrame(columns=["종목코드", "종목명_Kiwoom", "시장_Kiwoom"])
 
 def get_merged_stock_data() -> pd.DataFrame:
     """

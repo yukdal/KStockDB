@@ -4,4 +4,3 @@ gspread
 requests
 apscheduler
 python-dotenv
-pykiwoom; sys_platform == 'win32'
