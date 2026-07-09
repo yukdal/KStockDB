@@ -26,12 +26,23 @@ def update_google_sheet(df: pd.DataFrame):
         print(f"구글 인증 실패. service_account.json 파일을 확인하세요: {e}")
         return
 
-    # "한국종목코드" 탭(워크시트) 열기
+    # [수정] 자동 관리 전용 탭 이름 (.env에 WORKSHEET_NAME을 넣으면 바꿀 수 있고, 기본값은 "한국종목코드_자동")
+    # 기존 "한국종목코드" 탭(KRX 12열 양식)은 건드리지 않고, 프로그램 전용 탭을 따로 사용합니다
+    worksheet_name = os.getenv("WORKSHEET_NAME", "한국종목코드_자동")
+
+    # 스프레드시트 파일 자체를 열기
     try:
-        sheet = client.open_by_key(spreadsheet_id).worksheet("한국종목코드")
-    except Exception as e:                                           # 시트 ID 오류, 권한 미부여, 탭 이름 오타 등
+        spreadsheet = client.open_by_key(spreadsheet_id)
+    except Exception as e:                                           # 시트 ID 오류, 권한 미부여 등
         print(f"스프레드시트를 열 수 없습니다. 시트 ID와 서비스 계정 편집자 권한 부여 여부를 확인하세요: {e}")
         return
+
+    # [수정] 전용 탭이 있으면 열고, 없으면 자동으로 새로 만듭니다 (첫 실행 시 수동 작업 불필요)
+    try:
+        sheet = spreadsheet.worksheet(worksheet_name)                # 탭 열기 시도
+    except gspread.WorksheetNotFound:                                # 탭이 아직 없으면
+        print(f"'{worksheet_name}' 탭이 없어서 새로 만듭니다.")
+        sheet = spreadsheet.add_worksheet(title=worksheet_name, rows=100, cols=10)  # 새 탭 생성
 
     # 기존 데이터 전체를 2차원 리스트로 읽어옴 (헤더 중복이 있어도 에러가 안 나는 방식)
     existing_data = sheet.get_all_values()
