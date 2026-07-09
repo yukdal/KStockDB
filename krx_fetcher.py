@@ -27,15 +27,21 @@ KRX_WEB_HEADERS = {
 _krx_calendar = xcals.get_calendar("XKRX")
 
 
-def _recent_trading_day_str() -> str:
+def _recent_trading_days(count: int = 3) -> list:
     """
-    가장 최근 거래일을 "YYYYMMDD" 문자열로 반환합니다.
-    (Open API는 기준일자(basDd)를 요구하는데, 휴일을 넣으면 빈 결과가 오기 때문)
+    최근 거래일 여러 개를 "YYYYMMDD" 문자열 목록으로 반환합니다. (최신 날짜부터)
+    KRX는 '오늘' 데이터를 장 마감 정산 후에야 제공하는 경우가 많아서,
+    오늘 -> 직전 거래일 -> 그 전 거래일 순으로 재시도할 수 있도록 여러 날짜를 준비합니다.
     """
-    today = pd.Timestamp(datetime.date.today())              # 오늘 날짜
-    if _krx_calendar.is_session(today):                      # 오늘이 거래일이면
-        return today.strftime("%Y%m%d")                      # 오늘 날짜 사용
-    return _krx_calendar.previous_session(today).strftime("%Y%m%d")  # 아니면 직전 거래일 사용
+    day = pd.Timestamp(datetime.date.today())                # 오늘 날짜부터 시작
+    if not _krx_calendar.is_session(day):                    # 오늘이 휴장일이면
+        day = _krx_calendar.previous_session(day)            # 가장 최근 거래일로 이동
+
+    days = [day.strftime("%Y%m%d")]                          # 첫 번째 후보 날짜 저장
+    for _ in range(count - 1):                               # 필요한 개수만큼
+        day = _krx_calendar.previous_session(day)            # 하루씩 과거 거래일로 이동
+        days.append(day.strftime("%Y%m%d"))                  # 후보 목록에 추가
+    return days                                              # 예: ['20260709', '20260708', '20260707']
 
 
 def _json_to_df(payload: dict) -> pd.DataFrame:
@@ -140,26 +146,31 @@ ETF_MAPPING = {
 def _fetch_stock_via_openapi() -> pd.DataFrame:
     """
     [1순위] KRX Open API로 유가증권/코스닥/코넥스 종목 기본정보를 받아 합칩니다.
+    오늘 데이터가 아직 없으면(장 마감 전) 직전 거래일로 자동 재시도합니다.
     """
-    base_date = _recent_trading_day_str()                    # 기준일자 = 가장 최근 거래일
     # 시장별 API 경로와 시장 이름 (Open API는 시장마다 주소가 다름 - 확인 필요)
     endpoints = [("sto/stk_isu_base_info", "KOSPI"),         # 유가증권 종목기본정보
                  ("sto/ksq_isu_base_info", "KOSDAQ"),        # 코스닥 종목기본정보
                  ("sto/knx_isu_base_info", "KONEX")]         # 코넥스 종목기본정보
 
-    df_list = []                                             # 시장별 결과를 모아둘 리스트
-    for path, market in endpoints:                           # 세 시장을 순서대로 요청
-        raw = _fetch_openapi(path, {"basDd": base_date})     # 기준일자를 넣어 요청
-        if raw.empty:                                        # 이 시장 응답이 비었으면
-            print(f"[KRX OpenAPI] {market} 응답이 비어있습니다. (기준일: {base_date})")
-            continue                                         # 다음 시장으로
-        if "MKT_TP_NM" not in raw.columns:                   # 응답에 시장구분 항목이 없으면
-            raw["MKT_TP_NM"] = market                        # 우리가 아는 시장 이름으로 채움
-        df_list.append(raw)                                  # 결과 모음에 추가
+    for base_date in _recent_trading_days(3):                # 오늘 -> 직전 -> 그 전 거래일 순서로 시도
+        df_list = []                                         # 시장별 결과를 모아둘 리스트
+        for path, market in endpoints:                       # 세 시장을 순서대로 요청
+            raw = _fetch_openapi(path, {"basDd": base_date}) # 기준일자를 넣어 요청
+            if raw.empty:                                    # 이 시장 응답이 비었으면
+                continue                                     # 다음 시장으로
+            if "MKT_TP_NM" not in raw.columns:               # 응답에 시장구분 항목이 없으면
+                raw["MKT_TP_NM"] = market                    # 우리가 아는 시장 이름으로 채움
+            df_list.append(raw)                              # 결과 모음에 추가
 
-    if not df_list:                                          # 세 시장 모두 실패하면
-        return pd.DataFrame()                                # 빈 표 반환 (호출한 쪽에서 웹 방식으로 전환)
-    return pd.concat(df_list, ignore_index=True)             # 세 시장 표를 하나로 합쳐 반환
+        if df_list:                                          # 이 날짜로 데이터를 받았으면
+            print(f"[KRX OpenAPI] 기준일 {base_date} 데이터 수신 성공")
+            return pd.concat(df_list, ignore_index=True)     # 시장별 표를 하나로 합쳐 반환
+
+        # 이 날짜는 세 시장 모두 비어있음 -> 아직 정산 전일 수 있으니 하루 전으로 재시도
+        print(f"[KRX OpenAPI] 기준일 {base_date} 데이터가 아직 없습니다. 직전 거래일로 재시도합니다...")
+
+    return pd.DataFrame()                                    # 모든 날짜 실패 시 빈 표 (웹 방식으로 전환)
 
 
 def fetch_stock_basic_info() -> pd.DataFrame:
