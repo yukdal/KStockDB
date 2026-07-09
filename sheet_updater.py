@@ -47,15 +47,26 @@ def update_google_sheet(df: pd.DataFrame):
     # 기존 데이터 전체를 2차원 리스트로 읽어옴 (헤더 중복이 있어도 에러가 안 나는 방식)
     existing_data = sheet.get_all_values()
 
-    # 시트가 완전히 비어있으면: 헤더를 만들고 전체 데이터를 한 번에 입력
-    if not existing_data:
+    headers = ["시장", "종목코드", "종목명", "섹터"]                  # 프로그램이 사용하는 열 제목
+
+    # [수정] "초기화가 필요한 상태"인지 판단합니다.
+    # 완전히 빈 탭은 보통 빈 목록([])이 오지만, gspread 버전에 따라
+    # 빈 행 하나([[''])를 돌려주는 경우가 있어서 KeyError: '종목코드'가 났습니다.
+    # 그래서 목록이 비었는지가 아니라, 1행(제목 줄)에 '종목코드'가 있는지로 판단합니다.
+    if not existing_data or "종목코드" not in existing_data[0]:
+        # 제목 줄은 없는데 다른 내용이 들어있는 탭이라면, 덮어쓰면 위험하므로 중단
+        has_content = any(any(str(cell).strip() for cell in row) for row in existing_data)
+        if has_content:
+            print(f"'{worksheet_name}' 탭에 알 수 없는 양식의 데이터가 있어 안전을 위해 중단합니다. "
+                  f"(1행에 '{headers}' 제목 줄이 필요합니다)")
+            return
+
         print("시트가 비어있습니다. 초기 데이터를 씁니다.")
-        headers = ["시장", "종목코드", "종목명", "섹터"]              # 시트의 열 제목
-        sheet.append_row(headers)                                    # 1행에 헤더 추가
-        new_values = df[headers].values.tolist()                     # 표를 2차원 리스트로 변환
+        # 헤더 1줄 + 전체 종목을 A1 셀부터 한 번의 요청으로 기록합니다
+        all_values = [headers] + df[headers].values.tolist()
         # value_input_option="RAW" : "005930" 같은 값을 숫자로 바꾸지 않고 문자 그대로 저장 (앞의 0 보존)
-        sheet.append_rows(new_values, value_input_option="RAW")
-        print(f"초기화 완료: {len(new_values)} 종목 추가")
+        sheet.update(range_name="A1", values=all_values, value_input_option="RAW")
+        print(f"초기화 완료: {len(all_values) - 1} 종목 추가")
         return
 
     # 시트에 데이터가 있는 경우: 표(DataFrame)로 변환해서 비교 준비
