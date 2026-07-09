@@ -211,27 +211,53 @@ def fetch_stock_basic_info() -> pd.DataFrame:
     return df                                                # 완성된 표 반환
 
 
+def _fetch_etf_via_openapi() -> pd.DataFrame:
+    """
+    [1순위] KRX Open API로 ETF 종목 기본정보를 받아옵니다.
+    주식과 같은 규칙의 주소(etp/etf_isu_base_info)를 사용합니다. (확인 필요)
+    오늘 데이터가 아직 없으면 직전 거래일로 자동 재시도합니다.
+    """
+    for base_date in _recent_trading_days(3):                # 오늘 -> 직전 -> 그 전 거래일 순서로 시도
+        raw = _fetch_openapi("etp/etf_isu_base_info", {"basDd": base_date})  # ETF 기본정보 요청
+        if not raw.empty:                                    # 데이터를 받았으면
+            print(f"[KRX OpenAPI] ETF 기준일 {base_date} 데이터 수신 성공")
+            return raw                                       # 그대로 반환
+        print(f"[KRX OpenAPI] ETF 기준일 {base_date} 데이터가 아직 없습니다. 직전 거래일로 재시도합니다...")
+    return pd.DataFrame()                                    # 모든 날짜 실패 시 빈 표 (웹 방식으로 전환)
+
+
 def fetch_etf_basic_info() -> pd.DataFrame:
     """
     KRX '전종목 기본정보(ETF)'를 가져옵니다. (스크린샷 2번과 같은 표)
-    [참고] 공식 Open API에는 ETF '기본정보' 항목이 없는 것으로 보여(일별매매정보만 제공 - 확인 필요)
-    ETF는 웹 조회 방식을 사용합니다.
+    인증키가 있으면 공식 Open API를 먼저 쓰고, 없거나 실패하면 웹 조회로 대체합니다.
     """
-    print("[KRX] 웹 조회 방식으로 ETF 기본정보를 요청합니다...")
-    params = {
-        "bld": "dbms/MDC/STAT/standard/MDCSTAT04601",        # 'ETF 전종목 기본정보' 화면 내부 코드 (확인 필요)
-        "locale": "ko_KR",                                   # 한국어로 요청
-        "share": "1", "csvxls_isNo": "false",                # 1좌 단위 / 화면조회 형식
-    }
-    try:
-        # MDC0201040103 = '전종목 기본정보(ETF)' 화면의 메뉴 번호 (확인 필요)
-        raw = _fetch_web(params, menu_id="MDC0201040103")    # 웹 조회로 요청
-    except Exception as e:                                   # 실패해도 크래시 대신 안내
-        print(f"[KRX] ETF 웹 조회 실패: {e}")
-        raw = pd.DataFrame()                                 # 빈 표로 정리
+    raw = pd.DataFrame()                                     # 원본 데이터를 담을 빈 표
 
-    if raw.empty:                                            # 아무것도 못 받았으면
-        print("[KRX] ETF 기본정보 응답이 비어있습니다. (로그인 요구 또는 차단 가능성 - 확인 필요)")
+    if os.getenv("KRX_AUTH_KEY"):                            # .env에 인증키가 있으면
+        print("[KRX] 공식 Open API(인증키)로 ETF 기본정보를 요청합니다...")
+        try:
+            raw = _fetch_etf_via_openapi()                   # 1순위: 공식 API 시도
+        except Exception as e:                               # 주소가 없거나(404) 인증 문제 등
+            print(f"[KRX] ETF Open API 요청 실패: {e}")
+            print("[KRX] KRX Open API 사이트에서 'ETF 종목기본정보' API의 정확한 주소와 이용신청 여부를 확인해주세요. (확인 필요)")
+            raw = pd.DataFrame()                             # 빈 표로 두고 웹 방식으로 전환
+
+    if raw.empty:                                            # 인증키가 없거나 Open API가 실패했으면
+        print("[KRX] 웹 조회 방식으로 ETF 기본정보를 요청합니다...")
+        params = {
+            "bld": "dbms/MDC/STAT/standard/MDCSTAT04601",    # 'ETF 전종목 기본정보' 화면 내부 코드 (확인 필요)
+            "locale": "ko_KR",                               # 한국어로 요청
+            "share": "1", "csvxls_isNo": "false",            # 1좌 단위 / 화면조회 형식
+        }
+        try:
+            # MDC0201040103 = '전종목 기본정보(ETF)' 화면의 메뉴 번호 (확인 필요)
+            raw = _fetch_web(params, menu_id="MDC0201040103")  # 2순위: 웹 조회
+        except Exception as e:                               # 실패해도 크래시 대신 안내
+            print(f"[KRX] ETF 웹 조회 실패: {e}")
+            raw = pd.DataFrame()                             # 빈 표로 정리
+
+    if raw.empty:                                            # 두 방식 모두 실패하면
+        print("[KRX] ETF 기본정보를 받지 못했습니다. (Open API 이용신청 항목/주소 확인 필요)")
         return raw                                           # 빈 표 반환
 
     df = _map_columns(raw, ETF_MAPPING, "ETF기본정보")        # 한글 열이름 표로 변환
