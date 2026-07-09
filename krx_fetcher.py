@@ -1,33 +1,67 @@
+import os               # 환경변수(.env의 KRX_AUTH_KEY)를 읽기 위한 표준 라이브러리
+import datetime         # 기준일자 계산용 표준 라이브러리
 import requests         # KRX 서버에 데이터를 요청하기 위한 라이브러리
 import pandas as pd     # 받아온 데이터를 표(DataFrame)로 다루기 위한 라이브러리
+import exchange_calendars as xcals   # 한국거래소 거래일 달력 (기준일자 계산에 사용)
 
-# KRX 정보데이터시스템(data.krx.co.kr)의 데이터 조회 주소
-# (스크린샷의 '주식 기본정보'와 'ETF 기본정보' 화면이 내부적으로 사용하는 주소입니다)
-KRX_API_URL = "http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
+# ============================================================
+# [1순위] KRX Open API (공식 허가 통로, 인증키 필요)
+# ============================================================
+# .env에 KRX_AUTH_KEY가 있으면 이 공식 API를 먼저 사용합니다.
+KRX_OPENAPI_BASE = "http://data-dbg.krx.co.kr/svc/apis"   # KRX Open API 기본 주소 (확인 필요)
 
-# 일반 브라우저처럼 보이게 하는 요청 머리말 (없으면 KRX가 요청을 거부할 수 있음)
-KRX_HEADERS = {
+# ============================================================
+# [2순위] KRX 정보데이터시스템 웹 조회 (인증키 없거나 실패 시 대체)
+# ============================================================
+KRX_WEB_URL = "http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"   # 웹 화면용 데이터 주소
+KRX_WEB_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/126.0 Safari/537.36",   # 브라우저인 척하는 신분증
     "Referer": "http://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd",  # KRX 사이트에서 온 요청인 척
 }
 
+# 한국거래소 달력을 한 번만 로드해서 재사용
+_krx_calendar = xcals.get_calendar("XKRX")
 
-def _fetch_krx_table(params: dict) -> pd.DataFrame:
-    """
-    KRX 데이터 조회 API에 요청을 보내고, 응답 JSON 안의 표 데이터를 DataFrame으로 반환합니다.
-    """
-    res = requests.post(KRX_API_URL, data=params, headers=KRX_HEADERS, timeout=30)  # 데이터 요청 (30초 제한)
-    res.raise_for_status()                                   # 실패(403 등) 시 에러 발생시킴
-    payload = res.json()                                     # 응답을 JSON으로 해석
 
-    # KRX 응답은 {"OutBlock_1": [행들...]} 또는 {"output": [행들...]}처럼
-    # 표 이름이 조회 종류마다 달라서, "리스트가 들어있는 첫 항목"을 찾는 방식으로 처리합니다
+def _recent_trading_day_str() -> str:
+    """
+    가장 최근 거래일을 "YYYYMMDD" 문자열로 반환합니다.
+    (Open API는 기준일자(basDd)를 요구하는데, 휴일을 넣으면 빈 결과가 오기 때문)
+    """
+    today = pd.Timestamp(datetime.date.today())              # 오늘 날짜
+    if _krx_calendar.is_session(today):                      # 오늘이 거래일이면
+        return today.strftime("%Y%m%d")                      # 오늘 날짜 사용
+    return _krx_calendar.previous_session(today).strftime("%Y%m%d")  # 아니면 직전 거래일 사용
+
+
+def _json_to_df(payload: dict) -> pd.DataFrame:
+    """응답 JSON 안에서 표 데이터(리스트)를 찾아 DataFrame으로 반환합니다."""
     for value in payload.values():                           # JSON의 각 항목을 확인
         if isinstance(value, list) and value:                # 내용이 있는 리스트(=표 데이터)를 찾으면
             return pd.DataFrame(value)                       # 표로 변환해서 반환
+    return pd.DataFrame()                                    # 표 데이터가 없으면 빈 표
 
-    return pd.DataFrame()                                    # 표 데이터가 없으면 빈 표 반환
+
+def _fetch_openapi(path: str, params: dict) -> pd.DataFrame:
+    """
+    KRX Open API(공식)에 인증키를 담아 요청하고 결과를 표로 반환합니다.
+    """
+    auth_key = os.getenv("KRX_AUTH_KEY", "")                 # .env에서 인증키 읽기
+    headers = {"AUTH_KEY": auth_key}                         # KRX Open API는 AUTH_KEY 머리말로 인증 (확인 필요)
+    url = f"{KRX_OPENAPI_BASE}/{path}"                       # 전체 주소 조립
+    res = requests.get(url, params=params, headers=headers, timeout=30)  # 데이터 요청 (30초 제한)
+    res.raise_for_status()                                   # 실패(401/403 등) 시 에러 발생시킴
+    return _json_to_df(res.json())                           # 표로 변환해서 반환
+
+
+def _fetch_web(params: dict) -> pd.DataFrame:
+    """
+    KRX 정보데이터시스템 웹 조회(비공식)로 데이터를 받아 표로 반환합니다. (대체 수단)
+    """
+    res = requests.post(KRX_WEB_URL, data=params, headers=KRX_WEB_HEADERS, timeout=30)  # 데이터 요청
+    res.raise_for_status()                                   # 실패 시 에러 발생시킴
+    return _json_to_df(res.json())                           # 표로 변환해서 반환
 
 
 def _map_columns(raw: pd.DataFrame, mapping: dict, label: str) -> pd.DataFrame:
@@ -53,94 +87,133 @@ def _map_columns(raw: pd.DataFrame, mapping: dict, label: str) -> pd.DataFrame:
     return result                                            # 한글 열이름으로 정리된 표 반환
 
 
+# KRX 영문 항목이름 -> 시트 한글 열이름 매핑 (주식 기본정보 12열, 스크린샷 1과 같은 순서)
+STOCK_MAPPING = {
+    "ISU_CD": "표준코드",                                     # KR7... 12자리 국제표준코드
+    "ISU_NM": "한글 종목명",                                  # 정식 종목명
+    "ISU_SRT_CD": "단축코드",                                 # 6자리 종목코드
+    "ISU_ABBRV": "한글 종목약명",                              # 줄임 종목명
+    "ISU_ENG_NM": "영문 종목명",                               # 영문 이름
+    "LIST_DD": "상장일",                                      # 상장된 날짜
+    "MKT_TP_NM": "시장구분",                                  # KOSPI / KOSDAQ 등
+    "SECUGRP_NM": "증권구분",                                 # 주권 / 리츠 등
+    "SECT_TP_NM": "소속부",                                   # 우량기업부 등 (KOSDAQ만 값 있음)
+    "KIND_STKCERT_TP_NM": "주식종류",                          # 보통주 / 우선주
+    "PARVAL": "액면가",                                       # 액면가
+    "LIST_SHRS": "상장주식수",                                 # 상장된 주식 수
+}
+
+# KRX 영문 항목이름 -> 시트 한글 열이름 매핑 (ETF 기본정보, 스크린샷 2 순서 / 항목이름은 확인 필요)
+ETF_MAPPING = {
+    "ISU_CD": "표준코드",                                     # KR7... 12자리 국제표준코드
+    "ISU_SRT_CD": "단축코드",                                 # 6자리 종목코드
+    "ISU_NM": "한글종목명",                                   # 정식 종목명
+    "ISU_ABBRV": "한글종목약명",                               # 줄임 종목명
+    "ISU_ENG_NM": "영문종목명",                                # 영문 이름
+    "LIST_DD": "상장일",                                      # 상장된 날짜
+    "ETF_OBJ_IDX_NM": "기초지수명",                            # 따라가는 지수 이름
+    "IDX_CALC_INST_NM1": "지수산출기관",                        # 지수를 만드는 기관
+    "IDX_CALC_INST_NM2": "추적배수",                           # 일반 / 2X 레버리지 / 1X 인버스 등
+    "ETF_REPLICA_METHD_TP_CD": "복제방법",                     # 실물(패시브) / 합성 등
+    "IDX_MKT_CLSS_NM": "기초시장분류",                         # 국내 / 해외
+    "IDX_ASST_CLSS_NM": "기초자산분류",                        # 주식 / 채권 / 원자재 등
+    "LIST_SHRS": "상장좌수",                                  # 상장된 좌수
+    "COM_ABBRV": "운용사",                                    # 자산운용사 이름
+    "CU_QTY": "CU수량",                                       # 설정 단위 수량
+    "ETF_TOT_FEE": "총보수",                                  # 연간 수수료(%)
+    "TAX_TP_CD": "과세유형",                                  # 과세 방식
+}
+
+
+def _fetch_stock_via_openapi() -> pd.DataFrame:
+    """
+    [1순위] KRX Open API로 유가증권/코스닥/코넥스 종목 기본정보를 받아 합칩니다.
+    """
+    base_date = _recent_trading_day_str()                    # 기준일자 = 가장 최근 거래일
+    # 시장별 API 경로와 시장 이름 (Open API는 시장마다 주소가 다름 - 확인 필요)
+    endpoints = [("sto/stk_isu_base_info", "KOSPI"),         # 유가증권 종목기본정보
+                 ("sto/ksq_isu_base_info", "KOSDAQ"),        # 코스닥 종목기본정보
+                 ("sto/knx_isu_base_info", "KONEX")]         # 코넥스 종목기본정보
+
+    df_list = []                                             # 시장별 결과를 모아둘 리스트
+    for path, market in endpoints:                           # 세 시장을 순서대로 요청
+        raw = _fetch_openapi(path, {"basDd": base_date})     # 기준일자를 넣어 요청
+        if raw.empty:                                        # 이 시장 응답이 비었으면
+            print(f"[KRX OpenAPI] {market} 응답이 비어있습니다. (기준일: {base_date})")
+            continue                                         # 다음 시장으로
+        if "MKT_TP_NM" not in raw.columns:                   # 응답에 시장구분 항목이 없으면
+            raw["MKT_TP_NM"] = market                        # 우리가 아는 시장 이름으로 채움
+        df_list.append(raw)                                  # 결과 모음에 추가
+
+    if not df_list:                                          # 세 시장 모두 실패하면
+        return pd.DataFrame()                                # 빈 표 반환 (호출한 쪽에서 웹 방식으로 전환)
+    return pd.concat(df_list, ignore_index=True)             # 세 시장 표를 하나로 합쳐 반환
+
+
 def fetch_stock_basic_info() -> pd.DataFrame:
     """
-    KRX '전종목 기본정보(주식)'를 가져옵니다.
-    스크린샷 1번(표준코드~상장주식수 12열)과 같은 표를 만듭니다.
+    KRX '전종목 기본정보(주식)'를 가져옵니다. (스크린샷 1번과 같은 12열 표)
+    인증키가 있으면 공식 Open API를 먼저 쓰고, 없거나 실패하면 웹 조회로 대체합니다.
     """
-    params = {
-        "bld": "dbms/MDC/STAT/standard/MDCSTAT01901",        # '주식 전종목 기본정보' 화면의 내부 코드 (확인 필요)
-        "locale": "ko_KR",                                   # 한국어로 요청
-        "mktId": "ALL",                                      # 전체 시장 (KOSPI+KOSDAQ+KONEX)
-        "share": "1",                                        # 주식수 단위: 1주
-        "csvxls_isNo": "false",                              # 화면조회용 형식으로 요청
-    }
+    raw = pd.DataFrame()                                     # 원본 데이터를 담을 빈 표
 
-    print("[KRX] 주식 전종목 기본정보를 요청합니다...")        # 진행 상황 출력
-    raw = _fetch_krx_table(params)                           # KRX에 요청해서 원본 표 받기
+    if os.getenv("KRX_AUTH_KEY"):                            # .env에 인증키가 있으면
+        print("[KRX] 공식 Open API(인증키)로 주식 기본정보를 요청합니다...")
+        try:
+            raw = _fetch_stock_via_openapi()                 # 1순위: 공식 API 시도
+        except Exception as e:                               # 주소/인증 문제 등으로 실패하면
+            print(f"[KRX] Open API 요청 실패: {e}")           # 원인 출력 후
+            raw = pd.DataFrame()                             # 빈 표로 두고 웹 방식으로 전환
 
-    if raw.empty:                                            # 아무것도 못 받았으면
-        print("[KRX] 주식 기본정보 응답이 비어있습니다. (로그인 요구 또는 차단 가능성 - 확인 필요)")
+    if raw.empty:                                            # 인증키가 없거나 Open API가 실패했으면
+        print("[KRX] 웹 조회 방식으로 주식 기본정보를 요청합니다...")
+        params = {
+            "bld": "dbms/MDC/STAT/standard/MDCSTAT01901",    # '주식 전종목 기본정보' 화면 내부 코드 (확인 필요)
+            "locale": "ko_KR", "mktId": "ALL",               # 한국어 / 전체 시장
+            "share": "1", "csvxls_isNo": "false",            # 1주 단위 / 화면조회 형식
+        }
+        raw = _fetch_web(params)                             # 2순위: 웹 조회
+
+    if raw.empty:                                            # 두 방식 모두 실패하면
+        print("[KRX] 주식 기본정보를 받지 못했습니다. (네트워크/인증키/차단 여부 확인 필요)")
         return raw                                           # 빈 표 반환
 
-    # KRX 영문 항목이름 -> 시트 한글 열이름 매핑 (스크린샷 1번과 같은 순서)
-    mapping = {
-        "ISU_CD": "표준코드",                                 # KR7... 12자리 국제표준코드
-        "ISU_NM": "한글 종목명",                              # 정식 종목명
-        "ISU_SRT_CD": "단축코드",                             # 6자리 종목코드
-        "ISU_ABBRV": "한글 종목약명",                          # 줄임 종목명
-        "ISU_ENG_NM": "영문 종목명",                           # 영문 이름
-        "LIST_DD": "상장일",                                  # 상장된 날짜
-        "MKT_TP_NM": "시장구분",                              # KOSPI / KOSDAQ 등
-        "SECUGRP_NM": "증권구분",                             # 주권 / 리츠 등
-        "SECT_TP_NM": "소속부",                               # 우량기업부 등 (KOSDAQ만 값 있음)
-        "KIND_STKCERT_TP_NM": "주식종류",                      # 보통주 / 우선주
-        "PARVAL": "액면가",                                   # 액면가
-        "LIST_SHRS": "상장주식수",                             # 상장된 주식 수
-    }
-
-    df = _map_columns(raw, mapping, "주식기본정보")            # 한글 열이름 표로 변환
+    df = _map_columns(raw, STOCK_MAPPING, "주식기본정보")     # 한글 열이름 표로 변환
     print(f"[KRX] 주식 기본정보 {len(df)}종목 수신 완료")      # 결과 개수 출력
     return df                                                # 완성된 표 반환
 
 
 def fetch_etf_basic_info() -> pd.DataFrame:
     """
-    KRX '전종목 기본정보(ETF)'를 가져옵니다.
-    스크린샷 2번(표준코드~과세유형)과 같은 표를 만듭니다.
+    KRX '전종목 기본정보(ETF)'를 가져옵니다. (스크린샷 2번과 같은 표)
+    [참고] 공식 Open API에는 ETF '기본정보' 항목이 없는 것으로 보여(일별매매정보만 제공 - 확인 필요)
+    ETF는 웹 조회 방식을 사용합니다.
     """
+    print("[KRX] 웹 조회 방식으로 ETF 기본정보를 요청합니다...")
     params = {
-        "bld": "dbms/MDC/STAT/standard/MDCSTAT04601",        # 'ETF 전종목 기본정보' 화면의 내부 코드 (확인 필요)
+        "bld": "dbms/MDC/STAT/standard/MDCSTAT04601",        # 'ETF 전종목 기본정보' 화면 내부 코드 (확인 필요)
         "locale": "ko_KR",                                   # 한국어로 요청
-        "share": "1",                                        # 좌수 단위: 1좌
-        "csvxls_isNo": "false",                              # 화면조회용 형식으로 요청
+        "share": "1", "csvxls_isNo": "false",                # 1좌 단위 / 화면조회 형식
     }
-
-    print("[KRX] ETF 전종목 기본정보를 요청합니다...")          # 진행 상황 출력
-    raw = _fetch_krx_table(params)                           # KRX에 요청해서 원본 표 받기
+    raw = _fetch_web(params)                                 # 웹 조회로 요청
 
     if raw.empty:                                            # 아무것도 못 받았으면
         print("[KRX] ETF 기본정보 응답이 비어있습니다. (로그인 요구 또는 차단 가능성 - 확인 필요)")
         return raw                                           # 빈 표 반환
 
-    # KRX 영문 항목이름 -> 시트 한글 열이름 매핑 (스크린샷 2번 순서 / 항목이름은 확인 필요)
-    mapping = {
-        "ISU_CD": "표준코드",                                 # KR7... 12자리 국제표준코드
-        "ISU_SRT_CD": "단축코드",                             # 6자리 종목코드
-        "ISU_NM": "한글종목명",                               # 정식 종목명
-        "ISU_ABBRV": "한글종목약명",                           # 줄임 종목명
-        "ISU_ENG_NM": "영문종목명",                            # 영문 이름
-        "LIST_DD": "상장일",                                  # 상장된 날짜
-        "ETF_OBJ_IDX_NM": "기초지수명",                        # 따라가는 지수 이름
-        "IDX_CALC_INST_NM1": "지수산출기관",                    # 지수를 만드는 기관
-        "IDX_CALC_INST_NM2": "추적배수",                       # 일반 / 2X 레버리지 / 1X 인버스 등
-        "ETF_REPLICA_METHD_TP_CD": "복제방법",                 # 실물(패시브) / 합성 등
-        "IDX_MKT_CLSS_NM": "기초시장분류",                     # 국내 / 해외
-        "IDX_ASST_CLSS_NM": "기초자산분류",                    # 주식 / 채권 / 원자재 등
-        "LIST_SHRS": "상장좌수",                              # 상장된 좌수
-        "COM_ABBRV": "운용사",                                # 자산운용사 이름
-        "CU_QTY": "CU수량",                                   # 설정 단위 수량
-        "ETF_TOT_FEE": "총보수",                              # 연간 수수료(%)
-        "TAX_TP_CD": "과세유형",                              # 과세 방식
-    }
-
-    df = _map_columns(raw, mapping, "ETF기본정보")             # 한글 열이름 표로 변환
-    print(f"[KRX] ETF 기본정보 {len(df)}종목 수신 완료")        # 결과 개수 출력
+    df = _map_columns(raw, ETF_MAPPING, "ETF기본정보")        # 한글 열이름 표로 변환
+    print(f"[KRX] ETF 기본정보 {len(df)}종목 수신 완료")       # 결과 개수 출력
     return df                                                # 완성된 표 반환
 
 
 # 이 파일을 단독 실행하면 KRX 연결 테스트를 합니다 (python3 krx_fetcher.py)
 if __name__ == "__main__":
+    from dotenv import load_dotenv                           # .env 읽기용
+    load_dotenv()                                            # KRX_AUTH_KEY 등 환경변수 로드
+
+    key = os.getenv("KRX_AUTH_KEY")                          # 인증키 확인
+    print(f"KRX_AUTH_KEY 설정 여부: {'설정됨 (' + key[:4] + '****)' if key else '없음 - 웹 조회만 사용'}")
+
     stock_df = fetch_stock_basic_info()                      # 주식 기본정보 테스트
     print(stock_df.head())                                   # 앞 5줄 미리보기
     etf_df = fetch_etf_basic_info()                          # ETF 기본정보 테스트
