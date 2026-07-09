@@ -211,14 +211,29 @@ def fetch_stock_basic_info() -> pd.DataFrame:
     return df                                                # 완성된 표 반환
 
 
+# 'ETF 일별매매정보' API의 영문 항목이름 -> 한글 열이름 매핑
+# [참고] KRX Open API에는 ETF '기본정보' API가 없어서(확인 필요) 일별매매정보로 대체합니다.
+# 따라서 운용사/총보수/CU수량/과세유형 등은 이 방식으로는 받을 수 없습니다.
+ETF_TRD_MAPPING = {
+    "ISU_CD": "단축코드",                                     # 6자리 종목코드
+    "ISU_NM": "한글종목명",                                   # 종목명
+    "IDX_IND_NM": "기초지수명",                                # 따라가는 지수 이름
+    "TDD_CLSPRC": "종가",                                     # 해당일 마감 가격
+    "NAV": "NAV",                                            # 순자산가치 (ETF의 실제 가치)
+    "LIST_SHRS": "상장좌수",                                  # 상장된 좌수
+    "MKTCAP": "시가총액",                                     # 시장 가격 기준 총액
+    "INVSTASST_NETASST_TOTAMT": "순자산총액",                  # 운용 자산 총액
+    "BAS_DD": "기준일",                                       # 데이터 기준 날짜
+}
+
+
 def _fetch_etf_via_openapi() -> pd.DataFrame:
     """
-    [1순위] KRX Open API로 ETF 종목 기본정보를 받아옵니다.
-    주식과 같은 규칙의 주소(etp/etf_isu_base_info)를 사용합니다. (확인 필요)
+    [1순위] KRX Open API의 'ETF 일별매매정보'(etp/etf_bydd_trd)로 ETF 목록을 받아옵니다.
     오늘 데이터가 아직 없으면 직전 거래일로 자동 재시도합니다.
     """
     for base_date in _recent_trading_days(3):                # 오늘 -> 직전 -> 그 전 거래일 순서로 시도
-        raw = _fetch_openapi("etp/etf_isu_base_info", {"basDd": base_date})  # ETF 기본정보 요청
+        raw = _fetch_openapi("etp/etf_bydd_trd", {"basDd": base_date})  # ETF 일별매매정보 요청
         if not raw.empty:                                    # 데이터를 받았으면
             print(f"[KRX OpenAPI] ETF 기준일 {base_date} 데이터 수신 성공")
             return raw                                       # 그대로 반환
@@ -232,14 +247,19 @@ def fetch_etf_basic_info() -> pd.DataFrame:
     인증키가 있으면 공식 Open API를 먼저 쓰고, 없거나 실패하면 웹 조회로 대체합니다.
     """
     raw = pd.DataFrame()                                     # 원본 데이터를 담을 빈 표
+    mapping = ETF_MAPPING                                    # 기본은 웹 조회용 매핑
+    label = "ETF기본정보"                                     # 안내 메시지용 이름
 
     if os.getenv("KRX_AUTH_KEY"):                            # .env에 인증키가 있으면
-        print("[KRX] 공식 Open API(인증키)로 ETF 기본정보를 요청합니다...")
+        print("[KRX] 공식 Open API(인증키)로 ETF 정보를 요청합니다...")
         try:
-            raw = _fetch_etf_via_openapi()                   # 1순위: 공식 API 시도
-        except Exception as e:                               # 주소가 없거나(404) 인증 문제 등
+            raw = _fetch_etf_via_openapi()                   # 1순위: 공식 API(일별매매정보) 시도
+            if not raw.empty:                                # 성공했으면
+                mapping = ETF_TRD_MAPPING                    # 일별매매정보용 매핑 사용
+                label = "ETF일별정보"                         # 안내 이름도 변경
+        except Exception as e:                               # 주소/인증 문제 등
             print(f"[KRX] ETF Open API 요청 실패: {e}")
-            print("[KRX] KRX Open API 사이트에서 'ETF 종목기본정보' API의 정확한 주소와 이용신청 여부를 확인해주세요. (확인 필요)")
+            print("[KRX] KRX Open API 사이트에서 'ETF 일별매매정보' API의 이용신청 여부를 확인해주세요. (확인 필요)")
             raw = pd.DataFrame()                             # 빈 표로 두고 웹 방식으로 전환
 
     if raw.empty:                                            # 인증키가 없거나 Open API가 실패했으면
@@ -257,11 +277,11 @@ def fetch_etf_basic_info() -> pd.DataFrame:
             raw = pd.DataFrame()                             # 빈 표로 정리
 
     if raw.empty:                                            # 두 방식 모두 실패하면
-        print("[KRX] ETF 기본정보를 받지 못했습니다. (Open API 이용신청 항목/주소 확인 필요)")
+        print("[KRX] ETF 정보를 받지 못했습니다. (Open API 이용신청 항목/주소 확인 필요)")
         return raw                                           # 빈 표 반환
 
-    df = _map_columns(raw, ETF_MAPPING, "ETF기본정보")        # 한글 열이름 표로 변환
-    print(f"[KRX] ETF 기본정보 {len(df)}종목 수신 완료")       # 결과 개수 출력
+    df = _map_columns(raw, mapping, label)                   # 출처에 맞는 매핑으로 한글 열이름 표 변환
+    print(f"[KRX] {label} {len(df)}종목 수신 완료")           # 결과 개수 출력
     return df                                                # 완성된 표 반환
 
 
