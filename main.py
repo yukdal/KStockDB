@@ -5,13 +5,33 @@ from dotenv import load_dotenv                                  # .env 파일을
 
 load_dotenv()           # [수정] 다른 모듈을 import 하기 '전에' .env를 먼저 로드 (설정 누락 사고 방지)
 
+import os                                                       # 환경변수(.env 값) 읽기용
 from scheduler_logic import is_today_last_trading_day           # "오늘이 이번 주 마지막 거래일인가?" 판단 함수
 from data_fetcher import get_merged_stock_data                  # 전체 종목 데이터를 수집/병합하는 함수
-from sheet_updater import update_google_sheet                   # 구글 시트에 동기화하는 함수
+from sheet_updater import update_google_sheet, overwrite_worksheet  # 시트 동기화 / 전체 새로고침 함수
+from krx_fetcher import fetch_stock_basic_info, fetch_etf_basic_info  # KRX 주식/ETF 기본정보 수집 함수
 
 # 로그 형식 설정: 시간 - 모듈이름 - 레벨 - 메시지
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)                            # 이 파일 전용 로거 생성
+
+
+def update_basic_info_sheets():
+    """KRX에서 주식/ETF 기본정보(상장일, 액면가, 총보수 등)를 받아 전용 탭 2개를 통째로 새로고침합니다.
+    핵심 기능(티커 동기화)과 분리되어 있어서, 여기서 실패해도 티커 업데이트 결과는 유지됩니다."""
+    # 주식 기본정보 탭 (.env의 STOCK_INFO_WORKSHEET로 이름 변경 가능)
+    try:
+        stock_info = fetch_stock_basic_info()                   # KRX에서 주식 12열 기본정보 수집
+        overwrite_worksheet(stock_info, os.getenv("STOCK_INFO_WORKSHEET", "주식기본정보_자동"))
+    except Exception as e:                                      # KRX 차단/점검 등으로 실패해도
+        logger.error(f"주식 기본정보 업데이트 실패 (티커 동기화에는 영향 없음): {e}")
+
+    # ETF 기본정보 탭 (.env의 ETF_INFO_WORKSHEET로 이름 변경 가능)
+    try:
+        etf_info = fetch_etf_basic_info()                       # KRX에서 ETF 기본정보 수집
+        overwrite_worksheet(etf_info, os.getenv("ETF_INFO_WORKSHEET", "ETF기본정보_자동"))
+    except Exception as e:                                      # 실패해도 나머지 결과는 유지
+        logger.error(f"ETF 기본정보 업데이트 실패 (티커 동기화에는 영향 없음): {e}")
 
 
 def job_pipeline():
@@ -32,6 +52,9 @@ def job_pipeline():
 
                 # 2. 구글 시트 업데이트 (신규 Insert, 변경 Update)
                 update_google_sheet(df)
+
+                # 3. KRX 주식/ETF 기본정보 전체 새로고침 (실패해도 1~2번 결과에는 영향 없음)
+                update_basic_info_sheets()
 
                 logger.info("파이프라인이 성공적으로 수행되었습니다.")
                 break                                           # 성공했으니 재시도 루프 종료
