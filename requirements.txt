@@ -4,3 +4,4 @@ gspread
 requests
 apscheduler
 python-dotenv
+exchange_calendars
