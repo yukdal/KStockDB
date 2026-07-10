@@ -22,6 +22,8 @@ WorkingDirectory=$WORK_DIR
 ExecStart=/usr/bin/python3 $WORK_DIR/main.py
 Restart=always
 RestartSec=5
+# print() 출력이 버퍼에 갇히지 않고 journalctl 로그에 즉시 기록되도록 설정
+Environment=PYTHONUNBUFFERED=1
 # 만약 .env 파일이 존재하면 읽어옵니다.
 EnvironmentFile=-$WORK_DIR/.env
 
